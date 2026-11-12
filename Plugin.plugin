@@ -1,0 +1,86 @@
+from typing import Any, List
+import threading
+import time
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from ui.settings import Header, Input, Text
+from client_utils import send_text  # Отправка сообщений из SDK
+
+__id__ = "met_auto_sender"
+__name__ = "Met Auto Sender"
+__description__ = "Отправляет несколько сообщений по команде .met для тестирования"
+__author__ = "You"
+__version__ = "1.0.0"
+__app_version__ = ">=12.8.1"
+__sdk_version__ = ">=1.4.3.10"
+
+DEFAULT_COUNT = 5
+
+class MetAutoSenderPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+        self.log("Met Auto Sender loaded")
+
+    def create_settings(self) -> List[Any]:
+        return [
+            Header(text="Настройки отправки"),
+            Input(
+                key="message_count",
+                text="Количество сообщений",
+                default=str(DEFAULT_COUNT),
+                subtext="Сколько раз отправить текст после .met",
+                icon="msg_edit"
+            ),
+            Text(
+                text="Пример",
+                subtext=".met Привет → отправит 'Привет' N раз",
+                icon="msg_info"
+            ),
+        ]
+
+    def on_send_message_hook(self, account: int, params: Any) -> HookResult:
+        # Проверяем, что это текст
+        if not isinstance(getattr(params, "message", None), str):
+            return HookResult()
+
+        raw_text = params.message.strip()
+        if not raw_text.startswith(".met "):
+            return HookResult()
+
+        # Извлекаем текст после .met
+        text_to_send = raw_text[5:].strip()
+        if not text_to_send:
+            return HookResult()
+
+        # Получаем количество из настроек
+        try:
+            count = int(self.get_setting("message_count", DEFAULT_COUNT))
+            if count < 1:
+                count = 1
+        except ValueError:
+            count = DEFAULT_COUNT
+
+        # Получаем ID чата из params
+        peer_id = getattr(params, "peer", None)
+        if not peer_id:
+            return HookResult()
+
+        # Отменяем отправку самой команды .met
+        # и запускаем фоновый поток
+        threading.Thread(
+            target=self._send_loop,
+            args=(peer_id, text_to_send, count),
+            daemon=True
+        ).start()
+
+        return HookResult(strategy=HookStrategy.CANCEL)
+
+    def _send_loop(self, peer_id: int, text: str, count: int):
+        """Фоновый цикл отправки."""
+        for i in range(count):
+            try:
+                send_text(peer_id, text)
+            except Exception as e:
+                self.log(f"Send error at {i}: {e}")
+                break
+            # Небольшая задержка, чтобы не словить флуд-лимит сразу
+            time.sleep(0.5)
